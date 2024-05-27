@@ -2,3 +2,4 @@
 # building the documentation. For more information, see
 # https://github.com/geopython/pycsw/issues/521
 sphinx
+requests>=2.32.0 # not directly required, pinned by Snyk to avoid a vulnerability
