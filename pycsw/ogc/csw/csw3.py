@@ -28,19 +28,12 @@
 #
 # =================================================================
 
-import json
 import os
-import sys
-import cgi
 from time import time
-from urllib.parse import quote, unquote
-from io import StringIO
 from pycsw.core.etree import etree
 from pycsw.ogc.csw.cql import cql2fes
-from pycsw import oaipmh, opensearch, sru
-from pycsw.plugins.profiles import profile as pprofile
-import pycsw.plugins.outputschemas
-from pycsw.core import config, log, metadata, util
+from pycsw import opensearch
+from pycsw.core import metadata, util
 from pycsw.core.formats.fmt_json import xml2dict
 from pycsw.ogc.fes import fes1, fes2
 import logging
@@ -113,7 +106,8 @@ class Csw3(object):
         try:
             updatesequence = \
             util.get_time_iso2unix(self.parent.repository.query_insert())
-        except:
+        except Exception as err:
+            LOGGER.debug(f'Cannot set updatesequence: {err}')
             updatesequence = None
 
         node = etree.Element(util.nspath_eval('csw30:Capabilities',
@@ -512,7 +506,8 @@ class Csw3(object):
                 self.parent.context.namespaces)).text = pname
                 try:
                     operation, parameter = pname.split('.')
-                except:
+                except Exception as err:
+                    LOGGER.debug(f'pname2 not found: {err}')
                     return node
                 if (operation in self.parent.context.model['operations'] and
                     parameter in self.parent.context.model['operations'][operation]['parameters']):
@@ -534,8 +529,8 @@ class Csw3(object):
                 else:  # it's a core queryable, map to internal typename model
                     try:
                         pname2 = self.parent.repository.queryables['_all'][pname]['dbcol']
-                    except:
-                        pname2 = pname
+                    except Exception as err:
+                        LOGGER.debug(f'pname2 not found: {err}')
 
                 # decipher typename
                 dvtype = None
@@ -810,7 +805,7 @@ class Csw3(object):
 
             try:
                 name, order = tmp.rsplit(':', 1)
-            except:
+            except Exception:
                 return self.exceptionreport('InvalidParameterValue',
                 'sortby', 'Invalid SortBy value: must be in the format\
                 propertyname:A or propertyname:D')
@@ -977,19 +972,13 @@ class Csw3(object):
                         'Record serialization failed: %s' % str(err))
                         return self.parent.response
 
+        hopcount = int(self.parent.kvp.get('hopcount', 2)) - 1
+
         if ('federatedcatalogues' in self.parent.config and
-            'distributedsearch' in self.parent.kvp and 'hopcount' in self.parent.kvp and
-            self.parent.kvp['distributedsearch'] and int(self.parent.kvp['hopcount']) > 0):
-            # do distributed search
+                self.parent.kvp.get('distributedsearch') and
+                hopcount > 0):
 
-#        if all(['federatedcatalogues' in self.parent.config,
-#                'distributedsearch' in self.parent.kvp,
-#                self.parent.kvp['distributedsearch'],
-#                'hopcount' in self.parent.kvp,
-#                int(self.parent.kvp['hopcount']) > 0]):  # do distributed search
-
-            LOGGER.debug('DistributedSearch specified (hopCount: %s)',
-            self.parent.kvp['hopcount'])
+            LOGGER.debug('DistributedSearch specified (hopCount: %s).', hopcount)
 
             from owslib.csw import CatalogueServiceWeb
             from owslib.ows import ExceptionReport
@@ -1817,8 +1806,8 @@ class Csw3(object):
             if tmp is not None:
                 request['distributedsearch'] = True
                 hopcount = tmp.attrib.get('hopCount')
-                request['hopcount'] = int(hopcount)-1 if hopcount is not None \
-                else 1
+                request['hopcount'] = int(hopcount) if hopcount is not None \
+                else 2
             else:
                 request['distributedsearch'] = False
 
@@ -2079,7 +2068,8 @@ class Csw3(object):
         try:
             language = self.parent.config['server'].get('language')
             ogc_schemas_base = self.parent.config['server'].get('ogc_schemas_base')
-        except:
+        except Exception:
+            LOGGER.debug('Dropping to default language and OGC schemas base')
             language = 'en-US'
             ogc_schemas_base = self.parent.context.ogc_schemas_base
 
@@ -2157,7 +2147,8 @@ def write_boundingbox(bbox, nsmap):
     if bbox is not None:
         try:
             bbox2 = util.wkt2geom(bbox)
-        except:
+        except Exception as err:
+            LOGGER.debug(f'Geometry parsing error: {err}')
             return None
 
         if len(bbox2) == 4:

@@ -48,11 +48,19 @@
             {% for key, value in data['properties'].items() %}
               <tr>
                 <td>{{ key | capitalize }}</td>
-                {% if key == 'keywords' or key == 'formats' %}
+                {% if key == 'keywords' %}
                   <td>
                     <ul>
                     {% for keyword in value %}
                       <li>{{ keyword }}</li>
+                    {% endfor %}
+                    </ul>
+                  </td>
+                {% elif key == 'formats' %}
+                  <td>
+                    <ul>
+                    {% for f in value %}
+                      <li>{{ f.get('name') }}</li>
                     {% endfor %}
                     </ul>
                   </td>
@@ -64,9 +72,9 @@
                     {% for concept in theme['concepts'] %}
                       <li>
                         {% if concept['url'] %}
-                          <a href="{{ concept['url'] }}">{{ concept['name'] or concept['url'] }}</a>
+                          <a href="{{ concept['url'] }}">{{ concept['id'] or concept['url'] }}</a>
                         {% else %}
-                          {{ concept['name'] }}
+                          {{ concept['id'] }}
                         {% endif %}
                       </li>
                     {% endfor %}

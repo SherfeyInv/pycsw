@@ -162,6 +162,9 @@ def _parse_metadata(context, repos, record):
         return [_parse_dc(context, repos, exml)]
     elif root == '{%s}DIF' % context.namespaces['dif']:  # DIF
         pass  # TODO
+    elif root == '{%s}MD_Metadata' % context.namespaces['mdb']:
+        # ISO 19115p3 XML
+        return [_parse_iso(context, repos, exml)]
     else:
         raise RuntimeError('Unsupported metadata format')
 
@@ -242,7 +245,8 @@ def _parse_csw(context, repos, record, identifier, pagesize=10):
         md.getrecords2(typenames=csw_typenames, resulttype='hits',
                        outputschema=csw_outputschema)
         matches = md.results['matches']
-    except:  # this is a CSW, but server rejects query
+    except Exception:  # this is a CSW, but server rejects query
+        LOGGER.debug('CSW query failed')
         raise RuntimeError(md.response)
 
     if pagesize > matches:
@@ -1241,7 +1245,8 @@ def _parse_fgdc(context, repos, exml):
         try:
             tmp = '%s,%s,%s,%s' % (bbox.minx, bbox.miny, bbox.maxx, bbox.maxy)
             _set(context, recobj, 'pycsw:BoundingBox', util.bbox2wktpolygon(tmp))
-        except:  # coordinates are corrupted, do not include
+        except Exception:
+            LOGGER.debug('Coordinates are corrupt')
             _set(context, recobj, 'pycsw:BoundingBox', None)
     else:
         _set(context, recobj, 'pycsw:BoundingBox', None)
@@ -1321,7 +1326,8 @@ def _parse_gm03(context, repos, exml):
                                    data.geographic_bounding_box.east_bound_longitude,
                                    data.geographic_bounding_box.north_bound_latitude)
             _set(context, recobj, 'pycsw:BoundingBox', util.bbox2wktpolygon(tmp))
-        except:  # coordinates are corrupted, do not include
+        except Exception:
+            LOGGER.debug('Coordinates are corrupt')
             _set(context, recobj, 'pycsw:BoundingBox', None)
     else:
         _set(context, recobj, 'pycsw:BoundingBox', None)
@@ -1361,6 +1367,7 @@ def _parse_gm03(context, repos, exml):
     return recobj
 
 def _parse_iso(context, repos, exml):
+    """ Parses ISO 19139, ISO 19115p3 """
 
     from owslib.iso import MD_ImageDescription, MD_Metadata, SV_ServiceIdentification
     from owslib.iso_che import CHE_MD_Metadata
@@ -1368,16 +1375,21 @@ def _parse_iso(context, repos, exml):
     recobj = repos.dataset()
     bbox = None
     links = []
+    mdmeta_ns = 'gmd'
 
     if exml.tag == '{http://www.geocat.ch/2008/che}CHE_MD_Metadata':
         md = CHE_MD_Metadata(exml)
+    elif exml.tag == '{http://standards.iso.org/iso/19115/-3/mdb/2.0}MD_Metadata':
+        from owslib.iso3 import MD_Metadata
+        md = MD_Metadata(exml)
+        mdmeta_ns = 'mdb'
     else:
         md = MD_Metadata(exml)
 
     md_identification = md.identification[0]
 
     _set(context, recobj, 'pycsw:Identifier', md.identifier)
-    _set(context, recobj, 'pycsw:Typename', 'gmd:MD_Metadata')
+    _set(context, recobj, 'pycsw:Typename', f'{mdmeta_ns}:MD_Metadata')
     _set(context, recobj, 'pycsw:Schema', context.namespaces['gmd'])
     _set(context, recobj, 'pycsw:MdSource', 'local')
     _set(context, recobj, 'pycsw:InsertDate', util.get_today_and_now())
@@ -1391,7 +1403,7 @@ def _parse_iso(context, repos, exml):
     _set(context, recobj, 'pycsw:Modified', md.datestamp)
     _set(context, recobj, 'pycsw:Source', md.dataseturi)
 
-    if md.referencesystem is not None:
+    if md.referencesystem is not None and md.referencesystem.code is not None:
         try:
             code_ = 'urn:ogc:def:crs:EPSG::%d' % int(md.referencesystem.code)
         except ValueError:
@@ -1418,28 +1430,42 @@ def _parse_iso(context, repos, exml):
         elif len(md_identification.resourcelanguagecode) > 0:
             _set(context, recobj, 'pycsw:ResourceLanguage', md_identification.resourcelanguagecode[0])
 
+        # Geographic bounding box
         if hasattr(md_identification, 'bbox'):
             bbox = md_identification.bbox
         else:
             bbox = None
 
+        # Vertical extent of a bounding box
+        if hasattr(md_identification, 'extent'):
+            if hasattr(md_identification.extent, 'vertExtMin') and \
+                md_identification.extent.vertExtMin is not None:
+                _set(context, recobj, 'pycsw:VertExtentMin', md_identification.extent.vertExtMin)
+            if hasattr(md_identification.extent, 'vertExtMax') and \
+                md_identification.extent.vertExtMax is not None:
+                _set(context, recobj, 'pycsw:VertExtentMax', md_identification.extent.vertExtMax)
+
         if (hasattr(md_identification, 'keywords') and
             len(md_identification.keywords) > 0):
             all_keywords = [item for sublist in md_identification.keywords for item in sublist.keywords if item is not None]
-            _set(context, recobj, 'pycsw:Keywords', ','.join([k.name for k in all_keywords]))
+            _set(context, recobj, 'pycsw:Keywords', ','.join([
+                k.name for k in all_keywords if hasattr(k,'name') and k.name not in [None,'']]))
             _set(context, recobj, 'pycsw:KeywordType', md_identification.keywords[0].type)
             _set(context, recobj, 'pycsw:Themes', 
-                 json.dumps([t for t in md_identification.keywords if t.thesaurus is not None], 
+                json.dumps([t for t in md_identification.keywords if t.thesaurus is not None], 
                             default=lambda o: o.__dict__))
 
+        # Creator
         if (hasattr(md_identification, 'creator') and
             len(md_identification.creator) > 0):
             all_orgs = set([item.organization for item in md_identification.creator if hasattr(item, 'organization') and item.organization is not None])
             _set(context, recobj, 'pycsw:Creator', ';'.join(all_orgs))
+        # Publisher
         if (hasattr(md_identification, 'publisher') and
             len(md_identification.publisher) > 0):
             all_orgs = set([item.organization for item in md_identification.publisher if hasattr(item, 'organization') and item.organization is not None])
             _set(context, recobj, 'pycsw:Publisher', ';'.join(all_orgs))
+        # Contributor
         if (hasattr(md_identification, 'contributor') and
             len(md_identification.contributor) > 0):
             all_orgs = set([item.organization for item in md_identification.contributor if hasattr(item, 'organization') and item.organization is not None])
@@ -1524,18 +1550,18 @@ def _parse_iso(context, repos, exml):
 
                     _set(context, recobj, 'pycsw:Keywords', keywords)
 
-            bands = []
-            for band in ci.bands:
-                band_info = {
-                    'id': band.id,
-                    'units': band.units,
-                    'min': band.min,
-                    'max': band.max
-                }
-                bands.append(band_info)
+                bands = []
+                for band in ci.bands:
+                    band_info = {
+                        'id': band.id,
+                        'units': band.units,
+                        'min': band.min,
+                        'max': band.max
+                    }
+                    bands.append(band_info)
 
-            if len(bands) > 0:
-                _set(context, recobj, 'pycsw:Bands', json.dumps(bands))
+                if len(bands) > 0:
+                    _set(context, recobj, 'pycsw:Bands', json.dumps(bands))
 
     if hasattr(md, 'acquisition') and md.acquisition is not None:
         platform = md.acquisition.platforms[0]
@@ -1554,10 +1580,10 @@ def _parse_iso(context, repos, exml):
     if hasattr(md, 'distribution'):
         dist_links = []
         if hasattr(md.distribution, 'online'):
-            LOGGER.debug('Scanning for gmd:transferOptions element(s)')
+            LOGGER.debug(f'Scanning for {mdmeta_ns}:transferOptions element(s)')
             dist_links.extend(md.distribution.online)
         if hasattr(md.distribution, 'distributor'):
-            LOGGER.debug('Scanning for gmd:distributorTransferOptions element(s)')
+            LOGGER.debug(f'Scanning for {mdmeta_ns}:distributorTransferOptions element(s)')
             for dist_member in md.distribution.distributor:
                 dist_links.extend(dist_member.online)
         for link in dist_links:
@@ -1608,7 +1634,8 @@ def _parse_iso(context, repos, exml):
         try:
             tmp = '%s,%s,%s,%s' % (bbox.minx, bbox.miny, bbox.maxx, bbox.maxy)
             _set(context, recobj, 'pycsw:BoundingBox', util.bbox2wktpolygon(tmp))
-        except:  # coordinates are corrupted, do not include
+        except Exception:
+            LOGGER.debug('Coordinates are corrupt')
             _set(context, recobj, 'pycsw:BoundingBox', None)
     else:
         _set(context, recobj, 'pycsw:BoundingBox', None)
@@ -1686,7 +1713,8 @@ def _parse_dc(context, repos, exml):
         try:
             tmp = '%s,%s,%s,%s' % (bbox.minx, bbox.miny, bbox.maxx, bbox.maxy)
             _set(context, recobj, 'pycsw:BoundingBox', util.bbox2wktpolygon(tmp))
-        except:  # coordinates are corrupted, do not include
+        except Exception:
+            LOGGER.debug('Coordinates are corrupt')
             _set(context, recobj, 'pycsw:BoundingBox', None)
     else:
         _set(context, recobj, 'pycsw:BoundingBox', None)
@@ -1697,12 +1725,17 @@ def _parse_dc(context, repos, exml):
 def _parse_json_record(context, repos, record):
     """Parse JSON record"""
 
-    if 'http://www.opengis.net/spec/ogcapi-records-1/1.0/req/record-core' in record.get('conformsTo', []):
+    recobj = None
+
+    if 'conformsTo' in record:
         LOGGER.debug('Parsing OGC API - Records record model')
         recobj = _parse_oarec_record(context, repos, record)
     elif 'stac_version' in record:
         LOGGER.debug('Parsing STAC resource')
         recobj = _parse_stac_resource(context, repos, record)
+
+    if recobj is None:
+        raise RuntimeError('Unsupported JSON metadata format')
 
     atom_xml = atom.write_record(recobj, 'full', context)
 
@@ -1764,7 +1797,8 @@ def _parse_oarec_record(context, repos, record):
     if links:
         _set(context, recobj, 'pycsw:Links', json.dumps(links))
 
-    _set(context, recobj, 'pycsw:BoundingBox', util.bbox2wktpolygon(util.geojson_geometry2bbox(record['geometry'])))
+    if record.get('geometry') is not None:
+        _set(context, recobj, 'pycsw:BoundingBox', util.bbox2wktpolygon(util.geojson_geometry2bbox(record['geometry'])))
 
     if 'temporal' in record['properties'].get('extent', []):
         _set(context, recobj, 'pycsw:TempExtent_begin', record['properties']['extent']['temporal']['interval'][0])
@@ -1779,6 +1813,7 @@ def _parse_stac_resource(context, repos, record):
     recobj = repos.dataset()
     keywords = []
     links = []
+    bbox_wkt = None
 
     stac_type = record.get('type', 'Feature')
     if stac_type == 'Feature':
@@ -1788,7 +1823,8 @@ def _parse_stac_resource(context, repos, record):
         stype = 'item'
         title = record['properties'].get('title')
         abstract = record['properties'].get('description')
-        bbox_wkt = util.bbox2wktpolygon(util.geojson_geometry2bbox(record['geometry']))
+        if record.get('geometry') is not None:
+            bbox_wkt = util.bbox2wktpolygon(util.geojson_geometry2bbox(record['geometry']))
     elif stac_type == 'Collection':
         LOGGER.debug('Parsing STAC Collection')
         conformance = 'https://github.com/radiantearth/stac-spec/tree/master/collection-spec/collection-spec.md'
@@ -1799,8 +1835,6 @@ def _parse_stac_resource(context, repos, record):
         if 'extent' in record and 'spatial' in record['extent']:
             bbox_csv = ','.join(str(t) for t in record['extent']['spatial']['bbox'][0])
             bbox_wkt = util.bbox2wktpolygon(bbox_csv)
-        else:
-            bbox_wkt = None
         if 'extent' in record and 'temporal' in record['extent'] and 'interval' in record['extent']['temporal']:
             _set(context, recobj, 'pycsw:TempExtent_begin', record['extent']['temporal']['interval'][0][0])
             _set(context, recobj, 'pycsw:TempExtent_end', record['extent']['temporal']['interval'][0][1])
@@ -1811,7 +1845,6 @@ def _parse_stac_resource(context, repos, record):
         stype = 'catalog'
         title = record.get('title')
         abstract = record.get('description')
-        bbox_wkt = None
 
     _set(context, recobj, 'pycsw:Identifier', record['id'])
     _set(context, recobj, 'pycsw:Typename', typename)

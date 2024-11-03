@@ -38,10 +38,7 @@ import os
 from time import sleep
 
 from shapely.wkt import loads
-try:
-    from shapely.errors import ReadingError
-except Exception:
-    from shapely.geos import ReadingError
+from shapely.errors import ShapelyError
 
 from sqlalchemy import create_engine, func, __version__, select
 from sqlalchemy.exc import OperationalError
@@ -221,7 +218,6 @@ class Repository(object):
         LOGGER.info('setting repository queryables')
         # generate core queryables db and obj bindings
         self.queryables = {}
-
         for tname in self.context.model['typenames']:
             for qname in self.context.model['typenames'][tname]['queryables']:
                 self.queryables[qname] = {}
@@ -234,7 +230,8 @@ class Repository(object):
         # TODO smarter way of doing this
         self.queryables['_all'] = {}
         for qbl in self.queryables:
-            self.queryables['_all'].update(self.queryables[qbl])
+            if qbl != '_all':
+                self.queryables['_all'].update(self.queryables[qbl])
 
         self.queryables['_all'].update(self.context.md_core_model['mappings'])
 
@@ -306,7 +303,8 @@ class Repository(object):
 
         properties = {
             'geometry': {
-                '$ref': 'https://geojson.org/schema/Polygon.json'
+                '$ref': 'https://geojson.org/schema/Polygon.json',
+                'x-ogc-role': 'primary-geometry'
             }
         }
 
@@ -317,6 +315,9 @@ class Repository(object):
             properties[i.name] = {
                 'title': i.name
             }
+
+            if i.name == 'identifier':
+                properties[i.name]['x-ogc-role'] = 'id'
 
             try:
                 properties[i.name]['type'] = type_mappings[str(i.type)]
@@ -636,7 +637,7 @@ def query_spatial(bbox_data_wkt, bbox_input_wkt, predicate, distance):
         else:
             raise RuntimeError(
                 'Invalid spatial query predicate: %s' % predicate)
-    except (AttributeError, ValueError, ReadingError, TypeError):
+    except (AttributeError, ValueError, ShapelyError, TypeError):
         result = False
     return "true" if result else "false"
 
@@ -707,6 +708,7 @@ def setup(database, table, create_sfsql_tables=True, postgis_geometry_column='wk
     """Setup database tables and indexes"""
     from sqlalchemy import Column, create_engine, Integer, MetaData, \
         Table, Text, Unicode
+    from sqlalchemy.types import Float
     from sqlalchemy.orm import create_session
 
     LOGGER.info('Creating database %s', database)
@@ -839,6 +841,8 @@ def setup(database, table, create_sfsql_tables=True, postgis_geometry_column='wk
         Column('distancevalue', Text, index=True),
         Column('distanceuom', Text, index=True),
         Column('wkt_geometry', Text),
+        Column('vert_extent_min', Float, index=True),
+        Column('vert_extent_max', Float, index=True),
 
         # service
         Column('servicetype', Text, index=True),
