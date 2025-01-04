@@ -36,7 +36,7 @@
 #
 # =================================================================
 
-FROM python:3.10-slim-bookworm
+FROM python:3.14.0a3-slim-bookworm
 LABEL maintainer="massimods@met.no,aheimsbakk@met.no,tommkralidis@gmail.com"
 
 # Build arguments
